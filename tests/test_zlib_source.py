@@ -1,22 +1,29 @@
-import importlib.util
+"""Standalone Z-Library search test: runs without AstrBot (the astrbot API is stubbed).
+
+    python -m unittest discover -s tests      # or: python -m pytest tests
+
+Needs the plugin's own requirements (aiohttp, beautifulsoup4, Pillow). The Z-Library
+client is stubbed, so no network access and no curl_cffi are needed. The fuller
+regression suite under tests/astrbot_env/ runs inside an AstrBot container.
+"""
+import importlib
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
 
-
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+# Any package name works: the plugin's modules import each other relatively.
+PKG = "ebooks_under_test"
 STUBBED_MODULES = (
     "astrbot",
     "astrbot.api",
     "astrbot.api.all",
-    "data",
-    "data.plugins",
-    "data.plugins.astrbot_plugin_ebooks",
-    "data.plugins.astrbot_plugin_ebooks.Zlibrary",
-    "data.plugins.astrbot_plugin_ebooks.utils",
-    "data.plugins.astrbot_plugin_ebooks.zlib_source",
+    PKG,
+    f"{PKG}.Zlibrary",
+    f"{PKG}.utils",
+    f"{PKG}.zlib_source",
 )
 _MISSING = object()
 ORIGINAL_MODULES = {name: sys.modules.get(name, _MISSING) for name in STUBBED_MODULES}
@@ -51,6 +58,12 @@ class File:
         self.file = file
 
 
+class MessageChain:
+    def message(self, text):
+        self.text = text
+        return self
+
+
 class Logger:
     def info(self, *args, **kwargs):
         pass
@@ -71,20 +84,19 @@ astrbot_all.Image = Image
 astrbot_all.Node = Node
 astrbot_all.Nodes = Nodes
 astrbot_all.File = File
+astrbot_all.MessageChain = MessageChain
 astrbot_all.logger = Logger()
 sys.modules.setdefault("astrbot", types.ModuleType("astrbot"))
 sys.modules.setdefault("astrbot.api", types.ModuleType("astrbot.api"))
 sys.modules["astrbot.api.all"] = astrbot_all
-sys.modules.setdefault("data", types.ModuleType("data"))
-sys.modules.setdefault("data.plugins", types.ModuleType("data.plugins"))
-plugin_package = types.ModuleType("data.plugins.astrbot_plugin_ebooks")
+plugin_package = types.ModuleType(PKG)
 plugin_package.__path__ = [str(PLUGIN_ROOT)]
-sys.modules["data.plugins.astrbot_plugin_ebooks"] = plugin_package
+sys.modules[PKG] = plugin_package
 
 
 class FakeZlibrary:
-    def __init__(self, email=None, password=None):
-        self.logged_in = bool(email and password)
+    def __init__(self, domain=None, **kwargs):
+        self.logged_in = False
         self.search_called = False
 
     def isLoggedIn(self):
@@ -92,11 +104,12 @@ class FakeZlibrary:
 
     def login(self, email, password):
         self.logged_in = bool(email and password)
-        return {"success": self.logged_in}
+        return {"success": int(self.logged_in)}
 
-    def search(self, message=None, limit=None):
+    def search(self, message=None, limit=None, **kwargs):
         self.search_called = True
         return {
+            "success": 1,
             "books": [
                 {
                     "title": "Million Pound Note",
@@ -108,20 +121,17 @@ class FakeZlibrary:
                     "id": "12345",
                     "hash": "abcdef",
                 }
-            ]
+            ],
         }
 
 
-zlibrary_module = types.ModuleType("data.plugins.astrbot_plugin_ebooks.Zlibrary")
+zlibrary_module = types.ModuleType(f"{PKG}.Zlibrary")
 zlibrary_module.Zlibrary = FakeZlibrary
-sys.modules["data.plugins.astrbot_plugin_ebooks.Zlibrary"] = zlibrary_module
+zlibrary_module.ZlibraryError = type("ZlibraryError", (Exception,), {})
+sys.modules[f"{PKG}.Zlibrary"] = zlibrary_module
 
-
-utils_module = types.ModuleType("data.plugins.astrbot_plugin_ebooks.utils")
-
-
-async def no_cover(*args, **kwargs):
-    return None
+# The real helpers, with the homepage probe replaced by a tripwire.
+utils_module = importlib.import_module(f"{PKG}.utils")
 
 
 async def fail_url_accessible(*args, **kwargs):
@@ -130,21 +140,9 @@ async def fail_url_accessible(*args, **kwargs):
 
 
 utils_module.url_accessible_called = False
-utils_module.download_and_convert_to_base64 = no_cover
-utils_module.is_base64_image = lambda value: False
 utils_module.is_url_accessible = fail_url_accessible
-utils_module.is_valid_zlib_book_hash = lambda value: True
-utils_module.is_valid_zlib_book_id = lambda value: True
-utils_module.truncate_filename = lambda value: value
-sys.modules["data.plugins.astrbot_plugin_ebooks.utils"] = utils_module
 
-spec = importlib.util.spec_from_file_location(
-    "data.plugins.astrbot_plugin_ebooks.zlib_source",
-    PLUGIN_ROOT / "zlib_source.py",
-)
-zlib_source = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = zlib_source
-spec.loader.exec_module(zlib_source)
+zlib_source = importlib.import_module(f"{PKG}.zlib_source")
 ZlibSource = zlib_source.ZlibSource
 
 

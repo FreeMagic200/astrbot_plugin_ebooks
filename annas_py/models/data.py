@@ -16,12 +16,6 @@ class FileInfo:
 
 
 @dataclass(slots=True)
-class RecentDownload:
-    id: str
-    title: str
-
-
-@dataclass(slots=True)
 class SearchResult:
     id: str
     title: str

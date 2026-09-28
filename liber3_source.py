@@ -1,17 +1,21 @@
 import asyncio
 from typing import Optional
+from urllib.parse import quote
 
 import aiohttp
-from astrbot.api.all import Plain, Node, Nodes, File, logger
+from astrbot.api.all import Plain, Node, File, logger
 
-from data.plugins.astrbot_plugin_ebooks.utils import (
+from .utils import (
     SharedSession,
+    filter_unsafe,
     is_valid_liber3_book_id,
+    truncate_filename,
 )
 
 
 class Liber3Source(SharedSession):
-    def __init__(self, config, proxy: str, max_results: int):
+    def __init__(self, config, proxy: str, max_results: int, safety_checker=None):
+        self.safety_checker = safety_checker
         super().__init__(proxy)
         self.config = config
         self.max_results = max_results
@@ -47,7 +51,8 @@ class Liber3Source(SharedSession):
                     book_data = data["data"].get("book", [])
                     if not book_data:
                         logger.info("[Liber3] 未找到匹配的电子书。")
-                        return None
+                        # Empty result, not None: None means the service failed.
+                        return {"search_results": [], "detailed_books": {}}
 
                     book_ids = [item.get("id") for item in book_data[:limit]]
                     if not book_ids:
@@ -80,11 +85,21 @@ class Liber3Source(SharedSession):
         try:
             logger.info(f"[Liber3] Received books search query: {query}, limit: {limit}")
             results = await self._search_liber3_books_with_details(query, limit)
-            if not results:
+            if results is None:
+                return "[Liber3] 无法访问 Liber3 服务（后端自 2026-09 起已失效），建议在配置里关闭该平台。"
+            if not results.get("search_results"):
                 return "[Liber3] 未找到匹配的电子书。"
 
             search_results = results.get("search_results", [])
             detailed_books = results.get("detailed_books", {})
+
+            search_results = filter_unsafe(
+                search_results, self.safety_checker,
+                fields=["title", "author"],
+                source="Liber3",
+            )
+            if not search_results:
+                return "[Liber3] 全部结果被内容过滤丢弃。"
 
             async def construct_node(book):
                 book_id = book.get("id")
@@ -96,10 +111,20 @@ class Liber3Source(SharedSession):
                     Plain(f"年份: {detail.get('year', '未知')}\n"),
                     Plain(f"出版社: {detail.get('publisher', '未知')}\n"),
                     Plain(f"语言: {detail.get('language', '未知')}\n"),
-                    Plain(f"文件大小: {detail.get('filesize', '未知')}\n"),
-                    Plain(f"文件类型: {detail.get('extension', '未知')}\n"),
-                    Plain(f"ID(用于下载): L{book_id}"),
                 ]
+                ext = (detail.get("extension") or "").strip()
+                fsize = (detail.get("filesize") or "").strip()
+                fmt_parts = []
+                if ext:
+                    fmt_parts.append(ext.upper())
+                if fsize:
+                    fmt_parts.append(fsize)
+                if fmt_parts:
+                    chain.append(Plain(f"文件: {' · '.join(fmt_parts)}\n"))
+                ipfs_cid = (detail.get("ipfs_cid") or "").strip()
+                if ipfs_cid:
+                    chain.append(Plain(f"IPFS CID: {ipfs_cid}\n"))
+                chain.append(Plain(f"下载命令:\n/liber3 download L{book_id}"))
 
                 return Node(
                     uin=event.get_self_id(),
@@ -113,29 +138,30 @@ class Liber3Source(SharedSession):
             logger.error(f"[Liber3] 搜索失败: {e}")
             return "[Liber3] 搜索电子书时发生错误，请稍后再试。"
 
-    async def download(self, event, book_id: str = None):
+    async def download(self, event, book_id: str = ""):
         if not self.config.get("enable_liber3", False):
             return [event.plain_result("[Liber3] 功能未启用。")]
 
         if not is_valid_liber3_book_id(book_id):
             return [event.plain_result("[Liber3] 请提供有效的电子书 ID。")]
 
-        book_id = book_id.lstrip("L")
+        book_id = str(book_id).strip()[1:]
 
         book_details = await self._get_liber3_book_details([book_id])
         if not book_details or book_id not in book_details:
             return [event.plain_result("[Liber3] 无法获取电子书元信息，请检查电子书 ID 是否正确。")]
 
         book_info = book_details[book_id].get("book", {})
-        book_name = book_info.get("title", "unknown_book").replace(" ", "_")
-        extension = book_info.get("extension", "unknown_extension")
-        ipfs_cid = book_info.get("ipfs_cid", "")
+        extension = (book_info.get("extension") or "").strip().lstrip(".")
+        ipfs_cid = (book_info.get("ipfs_cid") or "").strip()
 
         if not ipfs_cid or not extension:
             return [event.plain_result("[Liber3] 电子书信息不足，无法完成下载。")]
 
-        ebook_url = f"https://gateway-ipfs.st/ipfs/{ipfs_cid}?filename={book_name}.{extension}"
-        file = File(name=f"{book_name}.{extension}", url=ebook_url)
+        filename = truncate_filename(f"{book_info.get('title') or 'unknown_book'}.{extension}")
+        # 书名进 query string 必须编码：「C# 编程」里的 # 会把后半截变成 fragment，& 会拆出新参数。
+        ebook_url = f"https://gateway-ipfs.st/ipfs/{quote(ipfs_cid)}?filename={quote(filename)}"
+        file = File(name=filename, url=ebook_url)
         return [event.chain_result([file])]
 
     async def close(self):

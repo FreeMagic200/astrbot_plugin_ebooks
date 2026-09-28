@@ -1,62 +1,196 @@
 {
-    "enable_merge_forward": {
-        "type": "bool",
-        "description": "启用消息合并转发",
-        "default": true,
-        "hint": "新版本QQ存在不支持查看嵌套消息的问题"
-    },
     "enable_calibre": {
         "type": "bool",
-        "description": "启用 Calibre-Web 电子书搜索",
+        "description": "平台 · 启用 Calibre-Web",
         "default": false,
-        "hint": "若启用需要部署 Calibre-Web 并配置服务的URL"
-    },
-    "enable_liber3": {
-        "type": "bool",
-        "description": "启用 Liber3 电子书搜索",
-        "default": true,
-        "hint": "默认启用，网络不连通时可禁用"
-    },
-    "enable_archive": {
-        "type": "bool",
-        "description": "启用 Archive.org 电子书搜索",
-        "default": true,
-        "hint": "默认启用，网络不连通时可禁用"
+        "hint": "自建的 Calibre-Web（含 Calibre-Web-Automated）书库，支持搜索、下载和随机推荐。需要同时填写下方的「Calibre-Web · 地址」；地址留空时，插件启动会自动关掉这个开关。"
     },
     "enable_zlib": {
         "type": "bool",
-        "description": "启用 Z-Library 电子书搜索",
+        "description": "平台 · 启用 Z-Library",
         "default": false,
-        "hint": "若启用需要配置 Z-Library 的登录账户"
+        "hint": "需要填写下方的 Z-Library 站点地址和账号；账号留空时，插件启动会自动关掉这个开关。搜索不限次数，下载受账号每日额度限制（通常约 10 次/天）。"
     },
     "enable_annas": {
         "type": "bool",
-        "description": "启用 Anna's Archive 电子书搜索",
+        "description": "平台 · 启用 Anna's Archive",
         "default": false,
-        "hint": "此搜索方式暂不支持直接下载，只能获得下载链接。"
+        "hint": "能搜到 Z-Library 已经下架的书。站点有人机验证，容器里需要装好 playwright 和 chromium；过一次验证要 20–45 秒，之后 30 分钟内的搜索不用再等。想让 bot 直接发文件，需要填下方的会员 secret key；书不在 Anna's 自己的服务器上时，会改用 Z-Library 按同一 md5 下载，所以建议同时启用 Z-Library。"
+    },
+    "enable_archive": {
+        "type": "bool",
+        "description": "平台 · 启用 archive.org",
+        "default": true,
+        "hint": "archive.org 上公开的电子书，不需要账号。只收 PDF 和 EPUB，只能在线借阅的书会被排除（全是借阅书时会提示找到了几本）。整句书名搜不到时，会改成每个词都要出现在书名或作者里再搜，并从末尾逐个去掉词重试。服务器连不上 archive.org 时关掉即可。"
+    },
+    "enable_liber3": {
+        "type": "bool",
+        "description": "平台 · 启用 Liber3（已失效）",
+        "default": false,
+        "hint": "Liber3 的后端从 2026-09 起已无法访问，开启只会在合并搜索里多一条报错，请保持关闭。",
+        "obvious_hint": true
     },
     "calibre_web_url": {
         "type": "string",
-        "description": "calibre-web 地址",
+        "description": "Calibre-Web · 地址",
         "default": "http://127.0.0.1:8083",
-        "hint": "例如在同主机安装的 calibre-web，地址为 http://127.0.0.1:8083"
+        "hint": "例如 `http://127.0.0.1:8083`。书库需要登录时写成 `http://用户名:密码@主机:端口`；账号密码只用来访问书库，不会出现在发给用户的下载命令里。"
+    },
+    "zlib_base_url": {
+        "type": "string",
+        "description": "Z-Library · 站点地址",
+        "default": "https://z-library.ec",
+        "hint": "必须填当前能用的镜像，镜像会不定期失效。2026-09 实测 `https://z-library.ec` 可用，z-lib.sk、z-library.sk、1lib.sk、z-lib.fm 都已失效。填了失效的地址，日志会报「/eapi/user/login 返回了非 JSON 响应」，自测方法见 README 的常见问题。",
+        "obvious_hint": true
     },
     "zlib_email": {
         "type": "string",
-        "description": "Z-Library 登录邮箱",
+        "description": "Z-Library · 登录邮箱",
         "default": "",
-        "hint": "登录 Z-Library 的邮箱"
+        "hint": "你的 Z-Library 账号邮箱。"
     },
     "zlib_password": {
         "type": "string",
-        "description": "Z-Library 登录密码",
+        "description": "Z-Library · 登录密码",
         "default": "",
-        "hint": "登录 Z-Library 的密码"
+        "hint": "登录会话过期时，插件会用这组账号密码自动重新登录。"
+    },
+    "annas_base_url": {
+        "type": "string",
+        "description": "Anna's Archive · 站点地址",
+        "default": "https://annas-archive.gl",
+        "hint": "主域名打不开时换成镜像，例如 `https://annas-archive.li`、`.se`、`.org`，以你的服务器实际能访问的为准。"
+    },
+    "annas_secret_key": {
+        "type": "string",
+        "description": "Anna's Archive · 会员 secret key（可选）",
+        "default": "",
+        "hint": "登录 Anna's Archive 网站后在 /account 页面查看。填了以后 /annas download 会直接把文件发给用户；不填只返回下载链接，需要用户自己去下。会员每天约 25 次快速下载，只有成功拿到下载地址才扣次数。"
+    },
+    "annas_language": {
+        "type": "string",
+        "description": "Anna's Archive · 语言过滤",
+        "default": "",
+        "hint": "留空（或填 any）表示不限语言，推荐这样用。只要某种语言时填语言代码：zh 中文、en 英文、ja 日文、fr 法文、de 德文、ru 俄文等；认不出的代码按不限处理。"
     },
     "max_results": {
+        "type": "int",
+        "description": "搜索 · 默认返回条数",
+        "default": 20,
+        "hint": "命令里没写数量时用这个值（有效范围 1–100，填错按 20 算）；和 AI 对话触发的搜索也用它。各命令的上限：/calibre 100（超出会提示）；/zlib、/archive、/annas 60；/ebooks search 按每个平台算，最多 50。后两类超出时按上限处理。"
+    },
+    "min_year": {
+        "type": "int",
+        "description": "搜索 · 最早出版年份",
+        "default": 0,
+        "hint": "只要这一年及以后出版的书，0 表示不限。只对 Z-Library 和 Anna's Archive 生效，Calibre-Web 和 archive.org 不按年份过滤；Anna's 很多书没有年份信息，可能过滤不掉。"
+    },
+    "per_platform_results": {
+        "type": "int",
+        "description": "搜索 · 合并搜索每个平台最多取几条",
+        "default": 20,
+        "hint": "只对 /ebooks search 和 AI 对话里的搜索生效。每个平台取「命令里的数量」和这个值中较小的那个，0 表示不另外限制。取回的书汇总后再统一排序；这里控制的是参与排序的候选数量，不是最终显示多少条。"
+    },
+    "merged_display_limit": {
+        "type": "int",
+        "description": "搜索 · 合并搜索最多显示几条",
+        "default": 30,
+        "hint": "/ebooks search 排好序后只发前 N 本书，0 表示全部发出。有书被截掉时，末尾会附一条「其余 N 条候选未显示」。不开重排时各平台轮流占名额，不会把排在后面的平台整个截掉。"
+    },
+    "enable_rerank": {
+        "type": "bool",
+        "description": "排序 · 用重排模型排序结果",
+        "default": false,
+        "hint": "需要先在 AstrBot「服务提供商」里添加并启用一个重排序（Rerank）模型。开启后：/zlib search 由模型从上百条候选里挑出最相关的；/ebooks search 把所有平台的书放在一起统一排序。关闭时，Z-Library 保持网站自己的排序（查询里点名的版次仍会排在最前），/ebooks search 按平台分段展示。模型不可用或调用失败时，自动退回不重排。"
+    },
+    "rerank_provider_id": {
         "type": "string",
-        "description": "默认最大返回结果数量",
-        "default": "20",
-        "hint": "每次搜索默认返回的最大结果数量，函数工具搜索会默认使用此设置，命令搜索可覆盖此值，范围1-50"
+        "description": "排序 · 指定重排模型（可选）",
+        "default": "",
+        "hint": "留空时使用第一个已启用的重排序模型；有多个时，填「服务提供商」里的 ID 指定其中一个。"
+    },
+    "rerank_candidates": {
+        "type": "int",
+        "description": "排序 · 每次交给模型的候选条数",
+        "default": 60,
+        "hint": "模型只看这么多条：越多越可能把冷门的书排上来，但耗时大致成比例增加。Z-Library 会优先放入点名的版次、书名对得上的书、简介里包含查询词的书；/ebooks search 让各平台轮流占名额。调大后，记得相应调大重排模型的超时时间。"
+    },
+    "rerank_doc_max_chars": {
+        "type": "int",
+        "description": "排序 · 每条候选交给模型的字数",
+        "default": 300,
+        "hint": "每本书的书名、版次、作者、简介等拼成一段文字交给模型，这是它的长度上限。简介会截取「开头一段 + 查询词出现的那一段」，所以目录里靠后的关键词也能被模型看到。调大会变慢：Qwen3-Reranker-4B 实测 80 条 × 300 字约 1.1 秒、× 1500 字约 3.8 秒。"
+    },
+    "rerank_instruction": {
+        "type": "text",
+        "description": "排序 · 重排模型指令",
+        "default": "",
+        "hint": "只在用 Qwen3-Reranker 时填写，默认留空（按原样发送查询，bge 等其它重排模型都用这种方式）。填写后会按 Qwen3-Reranker 的官方指令格式连同查询一起发送，用来告诉模型怎样才算「找对了书」。推荐填：给定用户的找书请求，判断文档描述的书是否正是用户要找的那本：书名要对得上；用户指定了作者、版次或年份时也必须符合，版次不符或看不出版次的书不算符合。实测 Qwen3-Reranker-4B 查「… 8th edition」：不填时第 8 版 0.38、第 7 版 0.33，填入推荐指令后 0.54 对 0.31。"
+    },
+    "platform_weight_calibre": {
+        "type": "float",
+        "description": "排序 · Calibre-Web 权重",
+        "default": 1.0,
+        "hint": "只影响 /ebooks search。开启重排时，每本书的得分会乘以所属平台的权重：大于 1 往前排（1.5 轻微提升，10 基本置顶），小于 1 往后排，0 排到最后。关闭重排时，按权重从大到小决定各平台出现的先后。"
+    },
+    "platform_weight_zlib": {
+        "type": "float",
+        "description": "排序 · Z-Library 权重",
+        "default": 1.0,
+        "hint": "说明同「Calibre-Web 权重」：只影响 /ebooks search，开启重排时乘到得分上，关闭重排时决定平台出现的先后。"
+    },
+    "platform_weight_annas": {
+        "type": "float",
+        "description": "排序 · Anna's Archive 权重",
+        "default": 1.0,
+        "hint": "说明同「Calibre-Web 权重」：只影响 /ebooks search，开启重排时乘到得分上，关闭重排时决定平台出现的先后。"
+    },
+    "platform_weight_archive": {
+        "type": "float",
+        "description": "排序 · archive.org 权重",
+        "default": 1.0,
+        "hint": "说明同「Calibre-Web 权重」：只影响 /ebooks search，开启重排时乘到得分上，关闭重排时决定平台出现的先后。"
+    },
+    "platform_weight_liber3": {
+        "type": "float",
+        "description": "排序 · Liber3 权重",
+        "default": 1.0,
+        "hint": "说明同「Calibre-Web 权重」：只影响 /ebooks search，开启重排时乘到得分上，关闭重排时决定平台出现的先后。"
+    },
+    "enable_merge_forward": {
+        "type": "bool",
+        "description": "展示 · 合并转发",
+        "default": true,
+        "hint": "开启时，搜索结果打包成合并转发消息，每条最多 30 本书，超过就分成几条发。关闭后每本书单独发一条消息；结果多、带封面时合并转发容易超时（QQ 约 180 秒），关掉更稳。随机推荐始终用合并转发。"
+    },
+    "enable_cover_image": {
+        "type": "bool",
+        "description": "展示 · 显示封面",
+        "default": true,
+        "hint": "开启时为每本书下载封面附在结果里，搜索会变慢、消息变大，结果多时合并转发容易超时。关闭后只发文字信息。"
+    },
+    "cover_max_size": {
+        "type": "int",
+        "description": "展示 · 封面最大边长（像素）",
+        "default": 400,
+        "hint": "封面缩到这个尺寸并重新压缩后再发送。400 在聊天里看足够清楚，每张约 10–20 KB；0 表示不压缩，直接发原图。"
+    },
+    "enable_content_filter": {
+        "type": "bool",
+        "description": "过滤 · 启用内容过滤",
+        "default": true,
+        "hint": "用插件自带的敏感书目词表，加上下方的补充关键词，检查每本书的书名、作者、出版社和简介，命中就不显示这本书（日志里会记下丢弃的条数）。不使用 AstrBot 全局的内容安全词表：那套是给聊天内容准备的，会大面积误伤书名。"
+    },
+    "enable_builtin_filter_keywords": {
+        "type": "bool",
+        "description": "过滤 · 启用内置禁书词表",
+        "default": true,
+        "hint": "插件自带的默认词表（_filter_keywords.txt，随插件仓库分发，参考 qqadmin 的 SensitiveLexicon 做法），默认开启。关闭后只用下方的补充关键词。"
+    },
+    "extra_filter_keywords": {
+        "type": "list",
+        "description": "过滤 · 补充屏蔽关键词",
+        "default": [],
+        "hint": "在自带词表之外再加的关键词，只影响本插件的搜索结果，简繁体都会匹配。规则：单个字忽略；两个字的词前后都不是文字时才算命中（「出版」不会命中「人民出版社」）；纯英文或数字的词按整个单词匹配、区分大小写，允许复数和时态词尾（anal 不会误伤 analysis）；其余三个字及以上的词只要出现就算。注意 adult、amateur、morphine、narcotic 这类词会拦下医学、护理类的正常书籍。"
     }
 }
