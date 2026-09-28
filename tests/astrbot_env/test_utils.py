@@ -166,39 +166,17 @@ def test_safety_checker_ascii_keywords_are_whole_words():
 # ---------------------------------------------------------------- edition
 @pytest.mark.fixed
 @pytest.mark.parametrize("query, expected", [
-    ("fundamentals of biostatistics 8th edition",
-     ("fundamentals of biostatistics 8th", "fundamentals of biostatistics", 8)),
-    ("fundamentals of biostatistics eighth edition",
-     ("fundamentals of biostatistics eighth", "fundamentals of biostatistics", 8)),
-    ("fundamentals of biostatistics 8e", ("fundamentals of biostatistics 8e", "fundamentals of biostatistics", 8)),
-    ("fundamentals of biostatistics 8th", ("fundamentals of biostatistics 8th", "fundamentals of biostatistics", 8)),
-    ("生理学 第九版", ("生理学 第九版", "生理学", 9)),
-    ("内科学 9版", ("内科学 9版", "内科学", 9)),
-    ("8th-edition calculus", ("8th calculus", "calculus", 8)),
-    ("norton anthology edition", ("norton anthology", "norton anthology edition", None)),
-    ("history of the 17th century", ("history of the 17th century", "history of the 17th century", None)),
-    ("the second sex", ("the second sex", "the second sex", None)),
-    ("生理学 2020版", ("生理学 2020版", "生理学 2020版", None)),
+    ("fundamentals of biostatistics 8th edition", "fundamentals of biostatistics 8th"),
+    ("fundamentals of biostatistics  Edition 8", "fundamentals of biostatistics 8"),
+    ("8th-edition calculus", "8th calculus"),
+    ("norton anthology editions", "norton anthology"),
+    ("生理学 第九版", "生理学 第九版"),  # only the English word goes; ordinals and 第N版 stay
+    ("fundamentals of biostatistics 8e", "fundamentals of biostatistics 8e"),
+    ("editorial design", "editorial design"),  # whole word only
+    ("edition", "edition"),  # nothing would be left, so the query is kept
 ])
-def test_split_edition_query(query, expected):
-    assert u.split_edition_query(query) == expected
-
-
-@pytest.mark.fixed
-def test_book_edition_and_label():
-    def be(ed, title="x"):
-        return u.book_edition({"edition": ed, "title": title})
-
-    assert be("7") == 7 and be("3rd ed.") == 3 and be("First Edition") == 1 and be("2 edition") == 2
-    assert be("2000", "FIFTH EDITION FUNDAMENTALS OF BIOSTATISTICS") == 5  # 年份误填进版次字段，回退看标题
-    assert be("", "生理学（第9版）") == 9
-    assert be("", "Study Guide For Fundamentals Of Biostatistics, 8e") == 8
-    assert be(None, "17th Century Europe") is None
-    assert be("", "The 7 Habits") is None
-    assert u.edition_label({"edition": "7"}) == "第 7 版"
-    assert u.edition_label({"edition": "2000"}) == ""
-    assert u.edition_label({"edition": "None"}) == ""
-    assert u.edition_label({"edition": "illustrated edition"}) == "illustrated edition"
+def test_strip_edition_word(query, expected):
+    assert u.strip_edition_word(query) == expected
 
 
 # ---------------------------------------------------------------- html → text

@@ -224,116 +224,20 @@ def match_score(query_norm: str, field_norm: str) -> int:
 
 
 # ---------------------------------------------------------------- 版次
-_EN_ORDINAL_WORDS = {
-    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
-    "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12, "thirteenth": 13,
-    "fourteenth": 14, "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18,
-    "nineteenth": 19, "twentieth": 20,
-}
-_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-_WORD_ORDINALS = "|".join(_EN_ORDINAL_WORDS)
-_ORDINAL = rf"\d{{1,2}}(?:st|nd|rd|th)?|{_WORD_ORDINALS}"
-_A = r"(?<![A-Za-z0-9])"   # 英文词左边界（CJK 相邻也算边界）
-_Z = r"(?![A-Za-z0-9])"
-# 按「标题/查询里明确写了是版次」的写法逐个试；group n 是版次号。
-_EDITION_PHRASE_RES = [
-    re.compile(rf"{_A}(?P<n>{_ORDINAL})[\s-]*(?:edition|edn|ed){_Z}\.?", re.I),   # 8th edition / 8 ed. / eighth edition
-    re.compile(rf"{_A}editions?[\s:]*(?:no\.?\s*)?(?P<n>\d{{1,2}}){_Z}", re.I),   # Edition 8
-    re.compile(rf"{_A}(?P<n>\d{{1,2}})e{_Z}", re.I),                               # 8e
-    re.compile(r"第\s*(?P<n>\d{1,2}|[一二三四五六七八九十两]{1,3})\s*版"),         # 第8版 / 第八版
-    re.compile(r"(?<![0-9])(?P<n>\d{1,2})\s*版"),                                  # 8版
-]
-# 查询末尾的孤立序数词（「fundamentals of biostatistics 8th」）也按版次理解；
-# 标题里不这么认——「17th Century Europe」不是第 17 版。
-_QUERY_TAIL_ORDINAL_RE = re.compile(rf"{_A}(?P<n>\d{{1,2}}(?:st|nd|rd|th)|{_WORD_ORDINALS})\s*$", re.I)
-# 版次字段本身（zlib 的 edition：「7」「5th ed.」「First Edition」）：开头的序数就是版次。
-_LOOSE_EDITION_RE = re.compile(rf"^\s*(?P<n>{_ORDINAL}){_Z}", re.I)
-_EDITION_WORD_RE = re.compile(rf"-?{_A}editions?{_Z}", re.I)
+_EDITION_WORD_RE = re.compile(r"-?(?<![A-Za-z0-9])editions?(?![A-Za-z0-9])", re.I)
 
 
-def _edition_number(token: str):
-    token = (token or "").strip().lower()
-    m = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)?", token)
-    if m:
-        n = int(m.group(1))
-    elif token in _EN_ORDINAL_WORDS:
-        n = _EN_ORDINAL_WORDS[token]
-    elif token and all(c in _CN_DIGITS or c == "十" for c in token):
-        tens, sep, ones = token.partition("十")
-        if sep:
-            n = (_CN_DIGITS.get(tens, 0) if tens else 1) * 10 + (_CN_DIGITS.get(ones, 0) if ones else 0)
-        else:
-            n = _CN_DIGITS.get(token, 0) if len(token) == 1 else 0
-    else:
-        return None
-    return n if 0 < n < 100 else None
+def strip_edition_word(query) -> str:
+    """The query to send to Z-Library: the user's words minus the English word "edition".
 
-
-def parse_edition(text, *, loose: bool = False):
-    """从文本里认出版次号（1-99），认不出返回 None。
-
-    loose=True 用于版次字段本身：「7」「5th ed.」「First Edition」开头的序数即版次；
-    4 位数（有些书把年份填进了版次字段）不算。标题/查询只认明确的版次写法。
-    """
-    s = _as_str(text)
-    if not s:
-        return None
-    if loose:
-        m = _LOOSE_EDITION_RE.match(s)
-        if m:
-            return _edition_number(m.group("n"))
-    for pat in _EDITION_PHRASE_RES:
-        m = pat.search(s)
-        if m:
-            n = _edition_number(m.group("n"))
-            if n:
-                return n
-    return None
-
-
-def split_edition_query(query) -> tuple:
-    """拆出查询里的版次，返回 (engine_query, core_query, edition)。
-
-    - engine_query：发给 Z-Library 的查询，只去掉英文单词 edition。Z-Library 把它
-      当标题必含词，而版次存在单独字段里、标题常常不带：「fundamentals of
-      biostatistics 7th edition」反而搜不到第 7 版，去掉 edition 后排第 2。
-      序数（8th/eighth/8e）和中文「第9版」留着——实测它们只会帮上游把对的版次排前面。
-    - core_query：去掉整段版次写法后的书名部分，用来判断「是不是这本书」。
-    - edition：版次号，查询里没提版次则为 None。
+    Z-Library treats every word as one the title must contain, but it keeps the
+    edition in a separate field and titles rarely carry the word: "fundamentals
+    of biostatistics 7th edition" missed the 7th edition, while the query without
+    "edition" ranked it 2nd. Nothing else is touched — ordinals and 「第9版」 stay,
+    and whether a book is the requested edition is left to the reranker.
     """
     q = " ".join(_as_str(query).split())
-    edition, core = None, q
-    for pat in (*_EDITION_PHRASE_RES, _QUERY_TAIL_ORDINAL_RE):
-        m = pat.search(core)
-        if not m:
-            continue
-        n = _edition_number(m.group("n"))
-        if n:
-            edition = edition or n
-            core = f"{core[:m.start()]} {core[m.end():]}"
-    core = " ".join(core.split()) or q
-    engine = " ".join(_EDITION_WORD_RE.sub(" ", q).split()) or q
-    return engine, core, edition
-
-
-def book_edition(book):
-    """书的版次号：先看版次字段，再看标题里的版次写法。"""
-    return parse_edition(book.get("edition"), loose=True) or parse_edition(book.get("title"))
-
-
-def edition_label(book) -> str:
-    """展示/喂给 rerank 用的版次文本；没有有效版次返回空串。
-
-    统一写成「第 N 版」：实测 Qwen3-Reranker 对「8th edition」和「第8版」两种
-    提问都能据此把第 8 版排到第 7 版前面，不带版次时两版同分。
-    """
-    n = book_edition(book)
-    if n:
-        return f"第 {n} 版"
-    raw = _as_str(book.get("edition"))
-    if not raw or raw.lower() == "none" or re.fullmatch(r"\d{4}", raw):
-        return ""  # 空值或误填的年份
-    return raw[:30]
+    return " ".join(_EDITION_WORD_RE.sub(" ", q).split()) or q
 
 
 # ---------------------------------------------------------------- ISBN
@@ -903,9 +807,9 @@ def rerank_inputs(config, query: str, docs: list) -> tuple:
     """(query, docs) to send to the rerank provider.
 
     With a non-empty rerank_instruction both are wrapped in Qwen3-Reranker's
-    instruction template. Measured with Qwen3-Reranker-4B behind vLLM, the
-    bare pair scored the requested 8th edition 0.38 vs 0.33 for the 7th; with
-    the instruction recommended in the README it is 0.54 vs 0.31. Empty (the
+    instruction template. Measured with Qwen3-Reranker-4B behind vLLM on Z-Library
+    docs, the bare pair scored the requested 8th edition 0.45 vs 0.42 for the 7th;
+    with the instruction recommended in the README it is 0.55 vs 0.29. Empty (the
     default) sends the raw pair, which is what non-Qwen3 rerankers expect.
     """
     instruction = str(config.get("rerank_instruction", "") or "").strip()

@@ -6,10 +6,8 @@ from astrbot.api.all import Plain, Image, Node, File, MessageChain, logger
 
 from .Zlibrary import Zlibrary, ZlibraryError
 from .utils import (
-    book_edition,
     discard_temp_file,
     download_and_convert_to_base64,
-    edition_label,
     excerpt_for_query,
     filter_unsafe,
     get_rerank_provider,
@@ -23,7 +21,7 @@ from .utils import (
     normalize_match_text,
     rerank_inputs,
     schedule_temp_cleanup,
-    split_edition_query,
+    strip_edition_word,
     truncate_filename,
     upload_cleanup_delay,
 )
@@ -213,41 +211,14 @@ class ZlibSource:
         return kept
 
     @classmethod
-    def _is_requested_edition(cls, book, edition, query_norm, tokens) -> bool:
-        """这本书是用户点名的版次，且书名确实对得上（命中档 ≤4）。
-
-        光看版次号不够：「生理学 第9版」会碎片命中《心理学（第9版）》。
-        """
-        return book_edition(book) == edition and cls._relevance_key(book, query_norm, tokens)[0] <= 4
-
-    @classmethod
-    def _pool_is_weak(cls, pool, query_norm, tokens, edition=None) -> bool:
-        """值得往深挖：池里最好的书也只够得上部分命中（tier>=5），
-        或者用户点名了版次而池里还没有这一版。"""
-        if edition:
-            return bool(pool) and not any(
-                cls._is_requested_edition(b, edition, query_norm, tokens) for b in pool
-            )
+    def _pool_is_weak(cls, pool, query_norm, tokens) -> bool:
+        """值得往深挖：池里最好的书也只够得上部分命中（tier>=5）。"""
         for b in pool:
             if cls._relevance_key(b, query_norm, tokens)[0] <= 4:
                 return False
         return bool(pool)
 
-    @classmethod
-    def _promote_edition(cls, books, edition, query_norm, tokens):
-        """用户点名的版次排到最前，两组内部各自保持原序。
-
-        上游和 rerank 都分不清版次：上游只看标题（版次在单独字段里），rerank
-        对「第 7 版 / 第 8 版」只差零点零几分。
-        """
-        if not edition:
-            return books
-        hit, rest = [], []
-        for b in books:
-            (hit if cls._is_requested_edition(b, edition, query_norm, tokens) else rest).append(b)
-        return hit + rest
-
-    async def _collect_books(self, search_kwargs, query_norm: str, tokens: list, edition=None):
+    async def _collect_books(self, search_kwargs, query_norm: str, tokens: list):
         """两种 order 各拉一页起步；池里全是近似命中时才再往深拉，返回 (books, had_exception)。
 
         池子按书在任一 order 里的最好名次排——直接信上游排序，本地不再做启发式重排
@@ -263,7 +234,7 @@ class ZlibSource:
         pool, seen = [], {}
         had_exception = self._absorb(first, pool, seen)
 
-        if self._pool_is_weak(pool, query_norm, tokens, edition):
+        if self._pool_is_weak(pool, query_norm, tokens):
             # 只有近似命中或完全没命中：上一页拉满过的 order 才往深翻，
             # 一页不满说明这个排序下结果已经见底，再翻也是空页。
             last_full = [order for order, (books, _) in zip(ZLIB_SEARCH_ORDERS, first)
@@ -277,14 +248,14 @@ class ZlibSource:
                 had_exception = self._absorb(batches, pool, seen) or had_exception
                 last_full = [order for order, (books, _) in zip(last_full, batches)
                              if len(books) >= ZLIB_CANDIDATE_POOL]
-                if not self._pool_is_weak(pool, query_norm, tokens, edition):
+                if not self._pool_is_weak(pool, query_norm, tokens):
                     break
         pool.sort(key=lambda b: b.get("_urank", 1 << 30))
         return pool, had_exception
 
     @staticmethod
     def _relevance_key(book, query_norm: str, tokens: list) -> tuple:
-        """命中强度分级键，越小命中越强；只用于弱命中判定（要不要往深翻页）和点名版次的资格判断，不再用于排序。query_norm/tokens 均为 normalize_match_text 后的形态。
+        """命中强度分级键，越小命中越强；只用于弱命中判定（要不要往深翻页）和 rerank 候选窗口的优先级，不再用于排序。query_norm/tokens 均为 normalize_match_text 后的形态。
 
         Why: /eapi/book/search 不传 order 时等价于 order=popular —— 按下载热度排，
         不是按相关度。中文又是按字碎片命中（搜「生理学」，标题里有「生活」+
@@ -341,21 +312,41 @@ class ZlibSource:
         return get_rerank_provider(self.context, self.config)
 
     @staticmethod
-    def _book_doc(book, max_chars: int = 300, query: str = "") -> str:
-        """拼给 reranker 的短文档：标题/版次/作者/出版社/年份/格式 + 简介摘录（开头 + 查询命中处）。"""
-        parts = [
-            str(book.get("title") or "").strip(),
-            edition_label(book),
-            str(book.get("author") or "").strip(),
-            str(book.get("publisher") or "").strip(),
-            str(book.get("year") or "").strip(),
-            str(book.get("extension") or "").strip().upper(),
-        ]
-        doc = " / ".join(p for p in parts if p)
+    def _field(book, key: str) -> str:
+        """A book field as display text; Z-Library sends missing values as "" or the string "None"."""
+        value = str(book.get(key) or "").strip()
+        return "" if value.lower() == "none" else value
+
+    @classmethod
+    def _edition_text(cls, book) -> str:
+        """Z-Library's edition field verbatim (「7」「5th ed.」「First Edition」), not interpreted."""
+        return cls._field(book, "edition")[:30]
+
+    @classmethod
+    def _book_doc(cls, book, max_chars: int = 300, query: str = "") -> str:
+        """拼给 reranker 的短文档：书名 + 版次/作者/年份/出版社/格式 + 简介摘录（开头 + 查询命中处）。
+
+        One labeled line per field, like the result card, so the reranker can tell which value
+        is the edition. Measured with Qwen3-Reranker-4B and the README instruction on
+        "Fundamentals of Biostatistics 8th edition": edition "8"/"8th"/"Eighth Edition" scored
+        0.53-0.56, "7" 0.29, no edition 0.42. A single "title / 版次: 8 / author" row (measured
+        without descriptions) scored the 8th edition 0.38 against 0.37 for no edition.
+        """
+        lines = [cls._field(book, "title")]
+        for label, value in (
+            ("版次", cls._edition_text(book)),
+            ("作者", cls._field(book, "author")),
+            ("年份", cls._field(book, "year")),
+            ("出版社", cls._field(book, "publisher")),
+            ("格式", cls._field(book, "extension").upper()),
+        ):
+            if value:
+                lines.append(f"{label}: {value}")
+        doc = "\n".join(line for line in lines if line)
         desc = str(book.get("description") or "").strip()
-        budget = max_chars - len(doc) - 3
+        budget = max_chars - len(doc) - 5
         if desc and budget > 20:
-            doc += " — " + excerpt_for_query(desc, query, budget, head_chars=budget // 3)
+            doc += "\n简介: " + excerpt_for_query(desc, query, budget, head_chars=budget // 3)
         return doc[:max_chars]
 
     async def _rerank_books(self, query: str, books: list, limit: int, front=None):
@@ -416,17 +407,17 @@ class ZlibSource:
             limit = 60
 
         min_year = int(self.config.get("min_year", 0) or 0)
-        # 发给上游的查询去掉 edition；判「是不是这本书」用去掉整段版次后的书名；
-        # rerank 仍用用户原话。
-        engine_query, core_query, edition = split_edition_query(query)
+        # Z-Library gets the query without the word "edition" (see strip_edition_word); the
+        # local hit tiers use the same words, and rerank still sees what the user typed.
+        engine_query = strip_edition_word(query)
         search_kwargs = {"message": engine_query, "limit": max(limit, ZLIB_CANDIDATE_POOL)}
         if min_year > 0:
             search_kwargs["yearFrom"] = min_year
-        query_norm = normalize_match_text(core_query)
-        tokens = [t for t in (normalize_match_text(w) for w in core_query.split()) if t]
+        query_norm = normalize_match_text(engine_query)
+        tokens = [t for t in (normalize_match_text(w) for w in engine_query.split()) if t]
 
         try:
-            sent = f"（上游查询: {engine_query}，版次: {edition or '-'}）" if engine_query != query or edition else ""
+            sent = f"（上游查询: {engine_query}）" if engine_query != query else ""
             logger.info(
                 f"[Z-Library] Received books search query: {query}{sent}, limit: {limit}, yearFrom={min_year or '-'}"
             )
@@ -434,7 +425,7 @@ class ZlibSource:
             if not await self._ensure_login():
                 return "[Z-Library] 登录失败。"
 
-            books, had_exception = await self._collect_books(search_kwargs, query_norm, tokens, edition)
+            books, had_exception = await self._collect_books(search_kwargs, query_norm, tokens)
             if not books:
                 if had_exception:
                     return "[Z-Library] 暂时无法连接到 Z-Library，请稍后再试。"
@@ -453,16 +444,10 @@ class ZlibSource:
             if not books:
                 return "[Z-Library] 全部结果被内容过滤丢弃。"
 
-            # 点名的版次先挪到最前、书名等于/开头是/包含查询的书紧随其后，一起优先进
-            # rerank 的候选窗口；rerank 完再挪一次版次，保证它排在别的版次前面。
-            books = self._promote_edition(books, edition, query_norm, tokens)
-
             def front(book):
-                # 点名的版次 → 书名等于 → 书名以查询开头 → 书名包含查询 → 查询词全在
+                # 书名等于 → 书名以查询开头 → 书名包含查询 → 查询词全在
                 # 书名+简介里（「生物化学 糖酵解」的「糖酵解」常只出现在简介的目录里）；
                 # 其余不抢窗口。「data analysis」光是书名含这个词的就上百本，不分档照样挤不进前 80。
-                if edition and self._is_requested_edition(book, edition, query_norm, tokens):
-                    return -1
                 tier = self._relevance_key(book, query_norm, tokens)[0]
                 if tier <= 2:
                     return tier
@@ -470,7 +455,7 @@ class ZlibSource:
                 return 3 if tokens and all(t in text for t in tokens) else None
 
             books, top_score = await self._rerank_books(query, books, limit, front=front)
-            books = self._promote_edition(books, edition, query_norm, tokens)[:limit]
+            books = books[:limit]
             extra = f"，rerank 最高分 {top_score:.3f}" if top_score is not None else ""
             logger.info(f"[Z-Library] 候选 {candidates} 条，返回 {len(books)} 条{extra}")
 
@@ -487,9 +472,9 @@ class ZlibSource:
                     if base64_image and is_base64_image(base64_image):
                         chain.append(Image.fromBase64(base64_image))
 
-                label = edition_label(book)
-                if label:
-                    chain.append(Plain(f"版次: {label}\n"))
+                edition = self._edition_text(book)
+                if edition:
+                    chain.append(Plain(f"版次: {edition}\n"))
 
                 chain.append(Plain(f"作者: {book.get('author', '未知')}\n"))
                 chain.append(Plain(f"年份: {book.get('year', '未知')}\n"))

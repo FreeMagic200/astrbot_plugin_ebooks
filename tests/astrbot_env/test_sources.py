@@ -136,60 +136,34 @@ def test_zlib_query_without_edition_word_sent_verbatim(fake_zlib, tmp_path, even
 
 
 @pytest.mark.fixed
-def test_zlib_edition_query(fake_zlib, tmp_path, event):
-    # 上游把 edition 当标题必含词，而版次在单独字段里：发出去的查询要去掉 edition，
-    # 点名的版次排最前，结果里要看得到版次。
+def test_zlib_edition_query_keeps_upstream_order(fake_zlib, tmp_path, event):
+    # 上游把 edition 当标题必含词，而版次在单独字段里：发出去的查询要去掉 edition。
+    # The plugin does not interpret editions: without rerank the upstream order stands,
+    # and the card shows Z-Library's edition field verbatim.
     fake_zlib.pages = {
-        (None, 1): [biostat(1, "7"), zbook(2, "Fundamentals of Physics", edition="8"),
+        (None, 1): [biostat(1, "7"), zbook(2, "Fundamentals of Physics", edition="None"),
                     biostat(3, "5th ed."), biostat(4, "8")],
         ("bestmatch", 1): [],
     }
     src = zs.ZlibSource(zcfg(), None, 10, str(tmp_path))
-    texts = node_texts(run(src.search_nodes(event, "fundamentals of biostatistics 8th edition", 3)))
+    texts = node_texts(run(src.search_nodes(event, "fundamentals of biostatistics 8th edition", 4)))
     assert {c["message"] for c in fake_zlib.search_calls} == {"fundamentals of biostatistics 8th"}
-    assert "/zlib download 4 000004" in texts[0] and "版次: 第 8 版" in texts[0]
-    assert "/zlib download 1 000001" in texts[1] and "版次: 第 7 版" in texts[1]
+    assert [t.split("/zlib download ")[1].split()[0] for t in texts] == ["1", "2", "3", "4"]
+    assert "版次: 7\n" in texts[0] and "版次" not in texts[1]
+    assert "版次: 5th ed.\n" in texts[2] and "版次: 8\n" in texts[3]
 
 
 @pytest.mark.fixed
-def test_zlib_edition_promotion_requires_title_match(fake_zlib, tmp_path, event):
-    # 「生理学 第9版」会碎片命中《心理学（第9版）》——版次对了、书不对，不能挪到前面。
-    fake_zlib.pages = {
-        (None, 1): [zbook(1, "心理学（第9版）"), zbook(2, "生理学", edition="8"), zbook(3, "生理学（第9版）")],
-        ("bestmatch", 1): [],
-    }
-    src = zs.ZlibSource(zcfg(), None, 10, str(tmp_path))
-    texts = node_texts(run(src.search_nodes(event, "生理学 第9版", 3)))
-    assert ["/zlib download 3 " in texts[0], "/zlib download 1 " in texts[1]] == [True, True]
-
-
-@pytest.mark.fixed
-def test_zlib_edition_missing_digs_deeper(fake_zlib, tmp_path):
-    fake_zlib.pages = {
-        (None, 1): [biostat(i, "7") for i in range(1, 101)],
-        ("bestmatch", 1): [biostat(1, "7")],
-        (None, 2): [biostat(900, "8")],
-    }
-    src = zs.ZlibSource(zcfg(), None, 10, str(tmp_path))
-    _, core, edition = u.split_edition_query("fundamentals of biostatistics 8th edition")
-    q = u.normalize_match_text(core)
-    toks = [u.normalize_match_text(w) for w in core.split()]
-    books, _ = run(src._collect_books({"message": core, "limit": 100}, q, toks, edition))
-    assert (None, 2) in [(c["order"], c["page"]) for c in fake_zlib.search_calls]
-    assert any(b["id"] == 900 for b in books)
-
-
-@pytest.mark.fixed
-def test_zlib_rerank_sees_edition_and_promotion_survives_it(fake_zlib, tmp_path, event):
+def test_zlib_rerank_sees_edition_and_decides_order(fake_zlib, tmp_path, event):
     from conftest import FakeRerankProvider, make_context
-    prov = FakeRerankProvider(lambda d: 5 if "第 7 版" in d else 1)  # 模型偏偏更喜欢第 7 版
-    fake_zlib.pages = {(None, 1): [biostat(1, "7"), biostat(4, "8")], ("bestmatch", 1): []}
+    prov = FakeRerankProvider(lambda d: 5 if "版次: 7\n" in d else 1)  # the model prefers the 7th edition
+    fake_zlib.pages = {(None, 1): [biostat(4, "8"), biostat(1, "7")], ("bestmatch", 1): []}
     src = zs.ZlibSource(zcfg(enable_rerank=True), None, 10, str(tmp_path), context=make_context(prov))
     texts = node_texts(run(src.search_nodes(event, "fundamentals of biostatistics 8th edition", 2)))
     query, docs, _ = prov.calls[0]
     assert query == "fundamentals of biostatistics 8th edition"  # rerank 用用户原话
-    assert any("第 8 版" in d for d in docs)
-    assert "/zlib download 4 000004" in texts[0]
+    assert docs[0].startswith("Fundamentals of Biostatistics\n版次: 8\n作者: Bernard Rosner\n")
+    assert "/zlib download 1 000001" in texts[0]  # the model's order is final
 
 
 @pytest.mark.fixed
