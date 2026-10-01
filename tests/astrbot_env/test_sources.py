@@ -348,7 +348,7 @@ def test_annas_fast_download_success(tmp_path, event):
     files = result_files(res)
     assert files[0].name == "Long Title -- Author.pdf"
     assert contents == [b"%PDF-annas"]
-    assert any("今日剩余" in t for t in result_texts(res[0]))
+    assert any("今日剩余 Anna’s Archive fast 下载额度：7" in t for t in result_texts(res[0]))
 
 
 def test_annas_failed_stream_leaves_no_temp(tmp_path, event):

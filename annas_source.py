@@ -227,7 +227,7 @@ class AnnasSource:
             left = (data.get("account_fast_download_info") or {}).get("downloads_left")
             extra = []
             if left is not None:
-                extra.append(Plain(f"今日剩余 fast 下载额度：{left}"))
+                extra.append(Plain(f"今日剩余 Anna’s Archive fast 下载额度：{left}"))
             return [event.chain_result([file, *extra])] if extra else [event.chain_result([file])]
         except Exception as e:
             logger.error(f"[Anna's Archive] fast 下载失败：{type(e).__name__}: {e}", exc_info=True)
